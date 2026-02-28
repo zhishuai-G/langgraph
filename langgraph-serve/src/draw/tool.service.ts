@@ -63,45 +63,57 @@ export const githubTool = tool(
   },
 );
 
-// 天气查询工具（模拟真实天气API）
+// 天气查询工具（使用真实天气API）
 export const weatherTool = tool(
   async ({ city }) => {
     console.log(`🌤️ [查询天气] 正在查询 ${city} 的天气...`);
 
-    // 模拟天气数据（实际项目中可以调用真实天气API）
-    const weatherDatabase: Record<string, any> = {
-      '北京': { temperature: 25, weather: '晴', humidity: 45, wind: '北风3级' },
-      '上海': { temperature: 28, weather: '多云', humidity: 70, wind: '东风2级' },
-      '广州': { temperature: 32, weather: '雷阵雨', humidity: 85, wind: '南风4级' },
-      '深圳': { temperature: 30, weather: '阵雨', humidity: 82, wind: '东南风3级' },
-      '杭州': { temperature: 26, weather: '阴', humidity: 65, wind: '东风2级' },
-      '成都': { temperature: 22, weather: '小雨', humidity: 75, wind: '无风' },
-      '武汉': { temperature: 27, weather: '多云', humidity: 60, wind: '微风' },
-      '西安': { temperature: 24, weather: '晴', humidity: 40, wind: '西风3级' },
-    };
+    try {
+      // 使用 wttr.in 免费天气API（无需API key）
+      const apiUrl = `https://wttr.in/${encodeURIComponent(city)}?format=j1`;
+      const response = await fetch(apiUrl);
 
-    // 支持别名
-    const cityMap: Record<string, string> = {
-      '首都': '北京',
-      '魔都': '上海',
-      '羊城': '广州',
-      '鹏城': '深圳',
-      '天堂': '杭州',
-    };
+      if (!response.ok) {
+        throw new Error(`天气API请求失败: ${response.status}`);
+      }
 
-    const normalizedName = cityMap[city] || city;
-    const weather = weatherDatabase[normalizedName] || { temperature: 20, weather: '晴', humidity: 50, wind: '微风' };
+      const data = await response.json();
 
-    const resultStr = `${normalizedName} 当前天气：温度 ${weather.temperature}°C，${weather.weather}，湿度 ${weather.humidity}%，${weather.wind}`;
+      // 解析天气数据
+      const currentCondition = data.current_condition[0];
+      const temperature = parseInt(currentCondition.temp_C);
+      const weatherDesc = currentCondition.weatherDesc[0].value;
+      const humidity = parseInt(currentCondition.humidity);
+      const windDesc = currentCondition.windspeedKmph + ' km/h';
 
-    console.log(`📥 [天气返回] ${resultStr}`);
-    return resultStr;
+      // 根据天气描述归类天气类型
+      let weatherType = '晴';
+      const descLower = weatherDesc.toLowerCase();
+      if (descLower.includes('cloud') || descLower.includes('overcast')) {
+        weatherType = '多云';
+      } else if (descLower.includes('rain') || descLower.includes('shower') || descLower.includes('drizzle')) {
+        weatherType = '雨';
+      } else if (descLower.includes('snow') || descLower.includes('sleet')) {
+        weatherType = '雪';
+      } else if (descLower.includes('fog') || descLower.includes('mist')) {
+        weatherType = '雾';
+      }
+
+      const resultStr = `${city} 当前天气：温度 ${temperature}°C，${weatherDesc}，湿度 ${humidity}%，风速 ${windDesc}`;
+
+      console.log(`📥 [天气返回] ${resultStr}`);
+      return resultStr;
+    } catch (error) {
+      console.error(`❌ [天气查询失败] ${error.message}`);
+      // 返回失败信息，让AI继续处理
+      return `天气查询失败：${error.message}，请让用户直接指定颜色或重试`;
+    }
   },
   {
     name: 'get_weather',
-    description: '当用户提到城市名称并询问天气，或者想根据天气情况画图时，调用此工具查询该城市的天气信息',
+    description: '当用户提到城市名称并询问天气，或者想根据天气情况画图时，调用此工具查询该城市的天气信息。支持全球主要城市的实时天气查询。',
     schema: z.object({
-      city: z.string().describe('城市名称，例如：北京、上海、深圳等'),
+      city: z.string().describe('城市名称，例如：北京、上海、New York、London 等，支持中文和英文城市名'),
     }),
   },
 );
