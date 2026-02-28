@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Agent 驱动的 Konva 画布</title>
+  <script src="https://unpkg.com/konva@9.3.6/konva.min.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 20px; background: #f0f2f5; }
+    .control-panel { margin-bottom: 20px; display: flex; gap: 10px; }
+    input { flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; }
+    button { padding: 10px 20px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    button:disabled { background: #ccc; }
+    /* 给画布加个漂亮的白底和阴影 */
+    #container { background: white; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }
+  </style>
+</head>
+<body>
+
+  <h2>✨ 对话即画图 (AI Agent + Konva.js)</h2>
+  
+  <div class="control-panel">
+    <input type="text" id="userInput" placeholder="例如：帮我画一个蓝色的长方形，稍微宽一点" />
+    <button id="sendBtn">发送给 AI</button>
+  </div>
+
+  <div id="container"></div>
+
+  <script>
+    // 1. 初始化 Konva 舞台和图层
+    const stage = new Konva.Stage({
+      container: 'container',
+      width: 800,
+      height: 500,
+    });
+    const layer = new Konva.Layer();
+    stage.add(layer);
+
+    const input = document.getElementById('userInput');
+    const btn = document.getElementById('sendBtn');
+
+    // 2. 点击发送按钮的逻辑
+    btn.addEventListener('click', async () => {
+      const text = input.value.trim();
+      if (!text) return;
+
+      btn.innerText = "AI 正在思考...";
+      btn.disabled = true;
+
+      try {
+        // 请求我们刚写的 Node.js 后端接口
+        const response = await fetch('http://localhost:3000/api/draw', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: text })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success && data.shapes.length > 0) {
+          // 清空旧图形
+          layer.destroyChildren();
+
+          // 遍历 AI 返回的数据，画到屏幕上！
+          data.shapes.forEach(shapeData => {
+            let konvaNode;
+            
+            // 将 AI 生成的通用 JSON 转换成 Konva 节点
+            if (shapeData.type === 'rect') {
+              konvaNode = new Konva.Rect({
+                x: 300, // 暂时固定画在中间
+                y: 200,
+                width: shapeData.width,
+                height: shapeData.height,
+                fill: shapeData.fill,
+                draggable: true // 顺手加个可拖拽功能
+              });
+            } else if (shapeData.type === 'circle') {
+              konvaNode = new Konva.Circle({
+                x: 400,
+                y: 250,
+                radius: shapeData.width / 2,
+                fill: shapeData.fill,
+                draggable: true
+              });
+            }
+
+            if (konvaNode) {
+              layer.add(konvaNode);
+            }
+          });
+          
+          layer.draw();
+        } else {
+          alert("AI 生成失败，请看控制台日志");
+        }
+      } catch (err) {
+        alert("网络请求失败，后端服务启动了吗？");
+      } finally {
+        btn.innerText = "发送给 AI";
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
