@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { START, END, Annotation, StateGraph } from '@langchain/langgraph';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
-import { brandThemeTool } from './tool.service';
+import { brandThemeTool, githubTool } from './tool.service';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { ChatOpenAI } from '@langchain/openai';
 import { z } from 'zod';
@@ -35,7 +35,7 @@ const SHAPE_SCHEMA = z.object({
 @Injectable()
 export class DrawService {
   private agentApp: any;
-  private tools = [brandThemeTool]; // 挂载我们写的品牌色查询工具
+  private tools = [githubTool]; // 挂载我们写的品牌色查询工具
 
   constructor(private configService: ConfigService) {
     this.initGraph();
@@ -54,12 +54,14 @@ export class DrawService {
     const modelWithTools = model.bindTools(this.tools);
 
     // 系统提示：强行立下死规矩，防幻觉
+    // 2. 赋予 AI 全新的系统指令
     const systemPrompt = new SystemMessage(
-      `你是一个图形生成助手。
+      `你是一个数据可视化图形生成助手。
 重要规则：
-1. 当用户提到任何品牌名称（如：支付宝、谷歌、阿里巴巴、腾讯、百度等）时，你必须调用 get_brand_color 工具来获取该品牌的官方配色。
-2. 不要自己猜测品牌颜色，必须通过工具查询。
-3. 只有当用户明确指定了具体颜色（如：红色、蓝色、#FF0000）时，才可以直接使用该颜色。`
+1. 当用户提到某个 GitHub 用户名时，必须调用 get_github_info 工具进行网络查询。
+2. 绝对不能自己捏造用户的仓库数量或粉丝数！
+3. 当你查到数据后，请将该用户的【公开仓库数量 (public_repos)】直接作为图形的宽度和高度 (width/height)。
+4. 如果用户没有明确说颜色，默认用黑色 (black)。`
     );
 
     // --- 节点 A: 决策大脑 ---
