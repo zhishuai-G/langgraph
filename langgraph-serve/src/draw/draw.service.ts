@@ -7,31 +7,20 @@ import { ChatOpenAI } from '@langchain/openai';
 import { z } from 'zod';
 import { ConfigService } from '@nestjs/config';
 
-// 定义状态类型
+// ==========================================
+// 1. 定义全局状态 (State)
+// ==========================================
 const GraphState = Annotation.Root({
-  userInput: Annotation<string>({
-    reducer: (cur, next) => next,
-    default: () => '',
-  }),
-  messages: Annotation<any[]>({
-    reducer: (cur, next) => cur.concat(next),
-    default: () => [],
-  }),
-  shapes: Annotation<any[]>({
-    reducer: (cur, next) => next,
-    default: () => [],
-  }),
-  errorLog: Annotation<string | null>({
-    reducer: (cur, next) => next,
-    default: () => null,
-  }),
-  retryCount: Annotation<number>({
-    reducer: (cur, next) => next,
-    default: () => 0,
-  }),
+  userInput: Annotation<string>({ reducer: (cur, next) => next, default: () => '' }),
+  messages: Annotation<any[]>({ reducer: (cur, next) => cur.concat(next), default: () => [] }),
+  shapes: Annotation<any[]>({ reducer: (cur, next) => next, default: () => [] }),
+  errorLog: Annotation<string | null>({ reducer: (cur, next) => next, default: () => null }),
+  retryCount: Annotation<number>({ reducer: (cur, next) => next, default: () => 0 }),
 });
 
-// --- 0. 定义数据契约 (Schema) ---
+// ==========================================
+// 2. 定义前端需要的数据格式 (Zod Schema)
+// ==========================================
 const SHAPE_SCHEMA = z.object({
   shapes: z.array(
     z.object({
@@ -46,27 +35,25 @@ const SHAPE_SCHEMA = z.object({
 @Injectable()
 export class DrawService {
   private agentApp: any;
-  private tools = [brandThemeTool];
+  private tools = [brandThemeTool]; // 挂载我们写的品牌色查询工具
 
   constructor(private configService: ConfigService) {
     this.initGraph();
   }
 
   private initGraph() {
-    // 使用 LangChain OpenAI 模型（兼容阿里云 DashScope）
+    // 初始化 LangChain 的 OpenAI 客户端（兼容阿里云 DashScope）
     const apiKey = this.configService.get<string>('DASHSCOPE_API_KEY');
-
     const model = new ChatOpenAI({
       apiKey: apiKey,
       model: 'qwen-turbo',
-      configuration: {
-        baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      },
+      configuration: { baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
     });
 
+    // 🔑 核心动作：把工具绑定到大模型上
     const modelWithTools = model.bindTools(this.tools);
 
-    // 系统提示：强调必须使用工具获取品牌颜色
+    // 系统提示：强行立下死规矩，防幻觉
     const systemPrompt = new SystemMessage(
       `你是一个图形生成助手。
 重要规则：
@@ -75,6 +62,7 @@ export class DrawService {
 3. 只有当用户明确指定了具体颜色（如：红色、蓝色、#FF0000）时，才可以直接使用该颜色。`
     );
 
+    // --- 节点 A: 决策大脑 ---
     const agentNode = async (state: typeof GraphState.State) => {
       console.log(`\n⚙️ 呼叫大模型...`);
       const currentMessages =
@@ -83,19 +71,18 @@ export class DrawService {
           : [systemPrompt, ...state.messages];
 
       const response = await modelWithTools.invoke(currentMessages);
-      
-      // 🔍 打印是否有工具调用
+
+      // 打印日志，方便我们在终端观察 AI 是不是去调工具了
       if ((response.tool_calls?.length ?? 0) > 0) {
         console.log('🔧 AI 决定调用工具:', JSON.stringify(response.tool_calls, null, 2));
       } else {
         console.log('💬 AI 直接回复，无工具调用');
         console.log('📝 AI 回复内容:', response.content);
       }
-      
       return { messages: [response] };
     };
 
-    // 节点 2: 工具执行器 (使用预建的 ToolNode)
+    // --- 节点 B: 工具执行器 ---
     const toolNodeBase = new ToolNode(this.tools);
     const toolNode = async (state: typeof GraphState.State) => {
       console.log('🛠️ 开始执行工具...');
@@ -104,16 +91,13 @@ export class DrawService {
       return result;
     };
 
-    // 节点 3: 结果提取器 (当工具跑完，AI 给出最终结论后，我们再提取 JSON)
+    // --- 节点 C: 结果提取器 ---
     const extractorNode = async (state: typeof GraphState.State) => {
       console.log('📊 提取最终结果...');
-      // 使用 withStructuredOutput 强制让 AI 输出符合 schema 的 JSON
       const structuredModel = model.withStructuredOutput(SHAPE_SCHEMA);
       
       const prompt = `你是图形生成助手。请根据以下信息生成图形配置：
-
 用户原始请求：${state.userInput}
-
 对话过程中获取的信息：
 ${state.messages.map((m: any) => m.content).filter(Boolean).join('\n')}
 
@@ -128,28 +112,32 @@ ${state.messages.map((m: any) => m.content).filter(Boolean).join('\n')}
       return { shapes: result.shapes };
     };
 
-    // 重新编排工作流
+    // ==========================================
+    // 3. 编排工作流
+    // ==========================================
     const workflow = new StateGraph(GraphState)
       .addNode('agent', agentNode)
       .addNode('tools', toolNode)
       .addNode('extractor', extractorNode)
       .addEdge(START, 'agent')
 
-      // 条件边：判断 AI 是想调工具，还是想结束对话
+      // 🚦 条件边：判断 AI 是想调工具，还是想结束对话
       .addConditionalEdges('agent', (state) => {
         const lastMsg = state.messages[state.messages.length - 1];
         if ((lastMsg.tool_calls?.length ?? 0) > 0) {
-          return 'tools'; // 走向工具节点
+          return 'tools'; // 走向工具节点去干活
         }
-        return 'extractor'; // AI 觉得信息够了，走向提取器
+        return 'extractor'; // 信息够了，走向提取器去翻译 JSON
       })
 
-      .addEdge('tools', 'agent') // 工具跑完一定要回到 agent，让 AI 思考下一步
+      // 🔄 工具跑完一定要回到 agent，让 AI 确认一眼查到的数据
+      .addEdge('tools', 'agent') 
       .addEdge('extractor', END);
 
     this.agentApp = workflow.compile();
   }
 
+  // 供 Controller 调用的入口
   async draw(text: string) {
     const finalState = await this.agentApp.invoke({
       userInput: text,
