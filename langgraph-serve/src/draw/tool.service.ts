@@ -62,3 +62,46 @@ export const githubTool = tool(
     }),
   },
 );
+
+// 天气查询工具（模拟真实天气API）
+export const weatherTool = tool(
+  async ({ city }) => {
+    console.log(`🌤️ [查询天气] 正在查询 ${city} 的天气...`);
+
+    // 模拟天气数据（实际项目中可以调用真实天气API）
+    const weatherDatabase: Record<string, any> = {
+      '北京': { temperature: 25, weather: '晴', humidity: 45, wind: '北风3级' },
+      '上海': { temperature: 28, weather: '多云', humidity: 70, wind: '东风2级' },
+      '广州': { temperature: 32, weather: '雷阵雨', humidity: 85, wind: '南风4级' },
+      '深圳': { temperature: 30, weather: '阵雨', humidity: 82, wind: '东南风3级' },
+      '杭州': { temperature: 26, weather: '阴', humidity: 65, wind: '东风2级' },
+      '成都': { temperature: 22, weather: '小雨', humidity: 75, wind: '无风' },
+      '武汉': { temperature: 27, weather: '多云', humidity: 60, wind: '微风' },
+      '西安': { temperature: 24, weather: '晴', humidity: 40, wind: '西风3级' },
+    };
+
+    // 支持别名
+    const cityMap: Record<string, string> = {
+      '首都': '北京',
+      '魔都': '上海',
+      '羊城': '广州',
+      '鹏城': '深圳',
+      '天堂': '杭州',
+    };
+
+    const normalizedName = cityMap[city] || city;
+    const weather = weatherDatabase[normalizedName] || { temperature: 20, weather: '晴', humidity: 50, wind: '微风' };
+
+    const resultStr = `${normalizedName} 当前天气：温度 ${weather.temperature}°C，${weather.weather}，湿度 ${weather.humidity}%，${weather.wind}`;
+
+    console.log(`📥 [天气返回] ${resultStr}`);
+    return resultStr;
+  },
+  {
+    name: 'get_weather',
+    description: '当用户提到城市名称并询问天气，或者想根据天气情况画图时，调用此工具查询该城市的天气信息',
+    schema: z.object({
+      city: z.string().describe('城市名称，例如：北京、上海、深圳等'),
+    }),
+  },
+);
