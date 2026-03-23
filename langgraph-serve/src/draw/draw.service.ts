@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { START, END, Annotation, StateGraph } from '@langchain/langgraph';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { brandThemeTool, githubTool, weatherTool } from './tool.service';
@@ -6,6 +6,8 @@ import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { ChatOpenAI } from '@langchain/openai';
 import { z } from 'zod';
 import { ConfigService } from '@nestjs/config';
+import { createOpenAI } from '@ai-sdk/openai';
+import { streamObject } from 'ai';
 
 // ==========================================
 // 1. 定义全局状态 (State)
@@ -36,9 +38,20 @@ const SHAPE_SCHEMA = z.object({
 export class DrawService {
   private agentApp: any;
   private tools = [brandThemeTool, weatherTool, githubTool]; // 挂载所有工具：品牌色查询、天气查询、GitHub信息查询
+  private aliyun: any;
+  private readonly logger = new Logger(DrawService.name);
 
   constructor(private configService: ConfigService) {
     this.initGraph();
+    this.initAliyun();
+  }
+
+  private initAliyun() {
+    const apiKey = this.configService.get<string>('DASHSCOPE_API_KEY');
+    this.aliyun = createOpenAI({
+      apiKey: apiKey,
+      baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    });
   }
 
   private initGraph() {
@@ -159,6 +172,39 @@ ${state.messages.map((m: any) => m.content).filter(Boolean).join('\n')}
       .addEdge('extractor', END);
 
     this.agentApp = workflow.compile();
+  }
+
+  // 新增：专门用于流式输出的接口
+  async streamDraw(text: string, res: any) {
+    // 1. 设置 HTTP 响应头，开启 SSE 流式传输模式
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    try {
+      // 2. 呼叫大模型，开启 streamObject (使用 ai SDK)
+      const { partialObjectStream } = await streamObject({
+        model: this.aliyun.chat('qwen-turbo'),
+        schema: SHAPE_SCHEMA,
+        prompt: `请根据需求生成图形配置：${text}`,
+      });
+
+      // 3. 核心魔法：异步遍历生成的"半成品"对象
+      for await (const partialObject of partialObjectStream) {
+        // partialObject 是经过 SDK 自动修补的合法 JS 对象！
+        // 我们把它包装成 SSE 标准格式 (data: {JSON}\n\n) 推给前端
+        res.write(`data: ${JSON.stringify(partialObject)}\n\n`);
+      }
+
+      // 4. 生成结束，发送结束信号
+      res.write('data: [DONE]\n\n');
+      res.end();
+
+    } catch (error) {
+      this.logger.error(`流式生成失败: ${error.message}`);
+      res.write(`data: {"error": "${error.message}"}\n\n`);
+      res.end();
+    }
   }
 
   // 供 Controller 调用的入口
