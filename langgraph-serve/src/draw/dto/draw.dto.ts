@@ -20,6 +20,22 @@ export class DrawDto {
   sessionId?: string;
 }
 
+// 👇 新增：恢复执行的 DTO
+export class ResumeDrawDto {
+  @ApiProperty({
+    description: '会话ID（必须与之前的 draw 请求使用相同的 sessionId）',
+    example: 'session-1711234567890',
+  })
+  sessionId: string;
+
+  @ApiProperty({
+    description: '用户决策：approve（确认渲染）或 reject（拒绝重来）',
+    enum: ['approve', 'reject'],
+    example: 'approve',
+  })
+  decision: 'approve' | 'reject';
+}
+
 export class ShapeDto {
   @ApiProperty({ description: '图形类型', enum: ['rect', 'circle'] })
   type: 'rect' | 'circle';
@@ -39,11 +55,21 @@ export class DrawResponseDto {
   success: boolean;
 
   @ApiProperty({
+    description: '状态：pending_review（等待审核）、approved（已确认）、rejected（已拒绝）、completed（完成）',
+    required: false,
+    enum: ['pending_review', 'approved', 'rejected', 'completed'],
+  })
+  status?: string;
+
+  @ApiProperty({
     description: '生成的图形配置数组',
     type: [ShapeDto],
     required: false,
   })
   shapes?: ShapeDto[];
+
+  @ApiProperty({ description: '提示信息', required: false })
+  message?: string;
 
   @ApiProperty({ description: '错误信息（失败时返回）', required: false })
   error?: string;

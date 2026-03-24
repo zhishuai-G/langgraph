@@ -47,16 +47,117 @@
       border-radius: 8px;
       overflow: hidden;
     }
+
+    /* 👇 审核面板样式 */
+    .review-panel {
+      display: none;
+      margin-bottom: 20px;
+      padding: 16px;
+      background: #fffbe6;
+      border: 2px solid #faad14;
+      border-radius: 8px;
+    }
+
+    .review-panel h3 {
+      margin: 0 0 12px 0;
+      color: #d48806;
+    }
+
+    .review-panel pre {
+      background: #f5f5f5;
+      padding: 12px;
+      border-radius: 4px;
+      font-size: 13px;
+      overflow-x: auto;
+      max-height: 200px;
+    }
+
+    .review-buttons {
+      margin-top: 12px;
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn-approve {
+      background: #52c41a;
+      color: white;
+      border: none;
+      padding: 10px 24px;
+      font-size: 16px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .btn-reject {
+      background: #ff4d4f;
+      color: white;
+      border: none;
+      padding: 10px 24px;
+      font-size: 16px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .btn-approve:hover {
+      background: #389e0d;
+    }
+
+    .btn-reject:hover {
+      background: #cf1322;
+    }
+
+    /* 状态提示 */
+    .status-bar {
+      margin-bottom: 12px;
+      padding: 8px 16px;
+      border-radius: 4px;
+      display: none;
+      font-size: 14px;
+    }
+
+    .status-bar.info {
+      display: block;
+      background: #e6f7ff;
+      border: 1px solid #91d5ff;
+      color: #096dd9;
+    }
+
+    .status-bar.success {
+      display: block;
+      background: #f6ffed;
+      border: 1px solid #b7eb8f;
+      color: #389e0d;
+    }
+
+    .status-bar.error {
+      display: block;
+      background: #fff2f0;
+      border: 1px solid #ffccc7;
+      color: #cf1322;
+    }
   </style>
 </head>
 
 <body>
 
-  <h2>✨ 对话即画图 (AI Agent + Konva.js)</h2>
+  <h2>✨ 对话即画图 (AI Agent + Human-in-the-Loop)</h2>
 
   <div class="control-panel">
     <input type="text" id="userInput" placeholder="例如：帮我画一个蓝色的长方形，稍微宽一点" />
     <button id="sendBtn">发送给 AI</button>
+  </div>
+
+  <!-- 状态提示条 -->
+  <div id="statusBar" class="status-bar"></div>
+
+  <!-- 👇 审核面板：AI 生成结果后展示，等待用户确认 -->
+  <div id="reviewPanel" class="review-panel">
+    <h3>⏸️ AI 已生成图形，请确认是否渲染：</h3>
+    <pre id="reviewContent"></pre>
+    <div class="review-buttons">
+      <button class="btn-approve" id="approveBtn">✅ 确认渲染</button>
+      <button class="btn-reject" id="rejectBtn">❌ 拒绝重来</button>
+    </div>
   </div>
 
   <div id="container"></div>
@@ -73,9 +174,46 @@
 
     const input = document.getElementById('userInput');
     const btn = document.getElementById('sendBtn');
+    const statusBar = document.getElementById('statusBar');
+    const reviewPanel = document.getElementById('reviewPanel');
+    const reviewContent = document.getElementById('reviewContent');
+    const approveBtn = document.getElementById('approveBtn');
+    const rejectBtn = document.getElementById('rejectBtn');
 
-    // 🔑 生成一个唯一的会话 ID（同一个页面会话内保持不变，刷新页面即为新会话）
+    // 🔑 会话 ID（同一个页面会话内保持不变）
     const sessionId = 'session-' + Date.now();
+
+    // 辅助函数：设置状态栏
+    function setStatus(type, text) {
+      statusBar.className = 'status-bar ' + type;
+      statusBar.textContent = text;
+    }
+
+    // 辅助函数：渲染图形到画布
+    function renderShapes(shapes) {
+      layer.destroyChildren();
+      shapes.forEach(shape => {
+        let konvaNode;
+        if (shape.type === 'rect') {
+          konvaNode = new Konva.Rect({
+            x: 300, y: 200,
+            width: shape.width || 100,
+            height: shape.height || 100,
+            fill: shape.fill || '#ccc',
+          });
+        } else if (shape.type === 'circle') {
+          konvaNode = new Konva.Circle({
+            x: 400, y: 250,
+            radius: (shape.width || 100) / 2,
+            fill: shape.fill || '#ccc',
+          });
+        }
+        if (konvaNode) {
+          layer.add(konvaNode);
+        }
+      });
+      layer.draw();
+    }
 
     // 2. 点击发送按钮的逻辑
     btn.addEventListener('click', async () => {
@@ -84,9 +222,10 @@
 
       btn.innerText = "AI 正在思考...";
       btn.disabled = true;
+      reviewPanel.style.display = 'none';
+      setStatus('info', '⏳ AI 正在生成图形...');
 
       try {
-        // 🚀 调用带记忆的 draw 接口
         const response = await fetch('http://localhost:3000/api/draw', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -95,45 +234,95 @@
 
         const data = await response.json();
 
-        if (data.success && data.shapes && data.shapes.length > 0) {
-          console.log('🎨 收到图形配置：', data.shapes);
+        if (data.success && data.status === 'pending_review') {
+          // 🔑 AI 生成完毕，进入审核模式！
+          console.log('⏸️ 收到待审核的图形:', data.shapes);
+          setStatus('info', '⏸️ AI 已生成图形方案，请在下方确认或拒绝');
 
-          // 清空旧图形
-          layer.destroyChildren();
+          // 在审核面板中展示图形配置
+          reviewContent.textContent = JSON.stringify(data.shapes, null, 2);
+          reviewPanel.style.display = 'block';
 
-          // 动态渲染图形
-          data.shapes.forEach(shape => {
-            let konvaNode;
+          // 同时在画布上显示预览（半透明效果）
+          renderShapes(data.shapes);
+          // 给预览图形加上半透明效果，表示"尚未确认"
+          layer.opacity(0.5);
+          layer.draw();
 
-            if (shape.type === 'rect') {
-              konvaNode = new Konva.Rect({
-                x: 300, y: 200,
-                width: shape.width || 100,
-                height: shape.height || 100,
-                fill: shape.fill || '#ccc',
-              });
-            } else if (shape.type === 'circle') {
-              konvaNode = new Konva.Circle({
-                x: 400, y: 250,
-                radius: (shape.width || 100) / 2,
-                fill: shape.fill || '#ccc',
-              });
-            }
-
-            if (konvaNode) {
-              layer.add(konvaNode);
-            }
-          });
-
-          layer.draw(); // 强制 Konva 重绘
+        } else if (data.success && data.shapes) {
+          // 没有 interrupt，直接渲染
+          renderShapes(data.shapes);
+          setStatus('success', '✅ 图形已渲染');
         } else if (data.error) {
-          alert('AI 出错了：' + data.error);
+          setStatus('error', '❌ AI 出错了：' + data.error);
         }
       } catch (err) {
-        alert("网络请求失败");
+        setStatus('error', '❌ 网络请求失败');
       } finally {
         btn.innerText = "发送给 AI";
         btn.disabled = false;
+      }
+    });
+
+    // 3. 👇 确认按钮：恢复执行，渲染图形
+    approveBtn.addEventListener('click', async () => {
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      setStatus('info', '⏳ 正在确认渲染...');
+
+      try {
+        const response = await fetch('http://localhost:3000/api/draw-resume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: sessionId, decision: 'approve' })
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.status === 'approved') {
+          // 渲染确认后的图形（恢复不透明度）
+          renderShapes(data.shapes);
+          layer.opacity(1);
+          layer.draw();
+          reviewPanel.style.display = 'none';
+          setStatus('success', '✅ 图形已确认并渲染！');
+        }
+      } catch (err) {
+        setStatus('error', '❌ 确认请求失败');
+      } finally {
+        approveBtn.disabled = false;
+        rejectBtn.disabled = false;
+      }
+    });
+
+    // 4. 👇 拒绝按钮：恢复执行但不渲染
+    rejectBtn.addEventListener('click', async () => {
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      setStatus('info', '⏳ 正在处理拒绝...');
+
+      try {
+        const response = await fetch('http://localhost:3000/api/draw-resume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: sessionId, decision: 'reject' })
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.status === 'rejected') {
+          // 清空画布
+          layer.destroyChildren();
+          layer.opacity(1);
+          layer.draw();
+          reviewPanel.style.display = 'none';
+          setStatus('info', '🔄 已拒绝，请重新输入指令');
+        }
+      } catch (err) {
+        setStatus('error', '❌ 拒绝请求失败');
+      } finally {
+        approveBtn.disabled = false;
+        rejectBtn.disabled = false;
       }
     });
   </script>

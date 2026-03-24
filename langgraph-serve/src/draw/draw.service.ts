@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { START, END, Annotation, StateGraph } from '@langchain/langgraph';
+import { START, END, Annotation, StateGraph, interrupt, Command } from '@langchain/langgraph';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { brandThemeTool, githubTool, weatherTool } from './tool.service';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { ConfigService } from '@nestjs/config';
 import { createOpenAI } from '@ai-sdk/openai';
 import { streamObject } from 'ai';
-import { RedisSaver } from '@langchain/langgraph-checkpoint-redis'; // 👈 1. 引入 Redis 持久化存储器
+import { RedisSaver } from '@langchain/langgraph-checkpoint-redis';
 
 // ==========================================
 // 1. 定义全局状态 (State)
@@ -41,25 +41,20 @@ export class DrawService {
   private tools = [brandThemeTool, weatherTool, githubTool]; // 挂载所有工具：品牌色查询、天气查询、GitHub信息查询
   private aliyun: any;
   private readonly logger = new Logger(DrawService.name);
-  // 👇 2. 声明 Redis 持久化存储器（数据存在 Redis 中，服务重启不丢失）
   private checkpointer: RedisSaver;
 
   constructor(private configService: ConfigService) {
     this.initAliyun();
-    // 注意：RedisSaver 初始化是异步的，不能在 constructor 里直接 await
     this.init();
   }
 
-  // 👇 新增：异步初始化 Redis Checkpointer
   private async init() {
     const redisUrl = this.configService.get<string>('REDIS_URL') || 'redis://localhost:6379';
     this.checkpointer = await RedisSaver.fromUrl(redisUrl, {
-      defaultTTL: 1440,     // 会话数据 24 小时后自动过期（单位：分钟）
-      refreshOnRead: true,  // 每次读取时自动续期，活跃会话永不过期
+      defaultTTL: 1440,
+      refreshOnRead: true,
     });
     this.logger.log('✅ Redis Checkpointer 初始化成功');
-
-    // Graph 的编译依赖 checkpointer，所以必须在 checkpointer 就绪后执行
     this.initGraph();
   }
 
@@ -173,6 +168,30 @@ ${state.messages.map((m: any) => m.content).filter(Boolean).join('\n')}
       return { shapes: result.shapes };
     };
 
+    // --- 👇 节点 D: 人工审核节点（Human-in-the-Loop 的核心！） ---
+    const reviewNode = async (state: typeof GraphState.State) => {
+      console.log('⏸️ 暂停等待人工审核...');
+      console.log('📋 待审核的图形:', JSON.stringify(state.shapes, null, 2));
+
+      // 🔑 调用 interrupt() —— 图的执行在这里冻结！
+      // 传入的参数会通过 __interrupt__ 字段返回给调用者（前端）
+      const humanDecision = interrupt({
+        message: '请确认是否渲染以下图形',
+        shapes: state.shapes,
+      });
+
+      // ⬇️ 以下代码只有在用户 resume 之后才会执行
+      console.log('✅ 收到人工决策:', humanDecision);
+
+      if (humanDecision === 'approve') {
+        // 用户确认，shapes 保持不变，流程正常结束
+        return { shapes: state.shapes };
+      } else {
+        // 用户拒绝，清空 shapes
+        return { shapes: [] };
+      }
+    };
+
     // ==========================================
     // 3. 编排工作流
     // ==========================================
@@ -180,6 +199,7 @@ ${state.messages.map((m: any) => m.content).filter(Boolean).join('\n')}
       .addNode('agent', agentNode)
       .addNode('tools', toolNode)
       .addNode('extractor', extractorNode)
+      .addNode('review', reviewNode)   // 👈 新增审核节点
       .addEdge(START, 'agent')
 
       // 🚦 条件边：判断 AI 是想调工具，还是想结束对话
@@ -193,9 +213,10 @@ ${state.messages.map((m: any) => m.content).filter(Boolean).join('\n')}
 
       // 🔄 工具跑完一定要回到 agent，让 AI 确认一眼查到的数据
       .addEdge('tools', 'agent')
-      .addEdge('extractor', END);
+      // 👇 改动：extractor 完成后不再直接 END，而是走向 review 审核节点
+      .addEdge('extractor', 'review')
+      .addEdge('review', END);
 
-    // 💡 3. 核心魔法：编译时开启记忆机制！
     this.agentApp = workflow.compile({ checkpointer: this.checkpointer });
   }
 
@@ -232,25 +253,57 @@ ${state.messages.map((m: any) => m.content).filter(Boolean).join('\n')}
     }
   }
 
-  // 供 Controller 调用的入口
+  // 供 Controller 调用的入口（第一次调用，会触发 interrupt 暂停）
   async draw(text: string, sessionId: string = 'default-session') {
     try {
       const finalState = await this.agentApp.invoke(
         {
           userInput: text,
-          // 🚨 直接在这里把用户当前的话作为 HumanMessage 存入记忆数组！
-          // 这样底层的 state.messages 就会永远保持最新，且包含历史记录
           messages: [new HumanMessage(text)]
         },
         {
-          // 🚨 通过 configurable 传入 thread_id，让 AI 知道现在是在跟谁聊天
           configurable: { thread_id: sessionId }
         }
       );
 
-      return { success: true, shapes: finalState.shapes };
+      // 🔑 检查是否被 interrupt 暂停了
+      if (finalState.__interrupt__ && finalState.__interrupt__.length > 0) {
+        // 图被暂停了，返回待审核的 shapes 给前端预览
+        const interruptData = finalState.__interrupt__[0].value;
+        return {
+          success: true,
+          status: 'pending_review',  // 告诉前端：需要人工确认
+          shapes: interruptData.shapes,
+          message: interruptData.message,
+        };
+      }
+
+      return { success: true, status: 'completed', shapes: finalState.shapes };
     } catch (error) {
       this.logger.error(`Agent 运行失败: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // 👇 新增：恢复执行（用户确认或拒绝后调用）
+  async resumeDraw(sessionId: string, decision: string) {
+    try {
+      const finalState = await this.agentApp.invoke(
+        // 🔑 用 Command({ resume }) 恢复被 interrupt 暂停的图
+        // resume 的值会成为 interrupt() 的返回值
+        new Command({ resume: decision }),
+        {
+          configurable: { thread_id: sessionId }
+        }
+      );
+
+      if (decision === 'approve') {
+        return { success: true, status: 'approved', shapes: finalState.shapes };
+      } else {
+        return { success: true, status: 'rejected', shapes: [] };
+      }
+    } catch (error) {
+      this.logger.error(`恢复执行失败: ${error.message}`);
       return { success: false, error: error.message };
     }
   }
