@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { ConfigService } from '@nestjs/config';
 import { createOpenAI } from '@ai-sdk/openai';
 import { streamObject } from 'ai';
-import { MemorySaver } from '@langchain/langgraph'; // 👈 1. 引入记忆存储器
+import { RedisSaver } from '@langchain/langgraph-checkpoint-redis'; // 👈 1. 引入 Redis 持久化存储器
 
 // ==========================================
 // 1. 定义全局状态 (State)
@@ -41,12 +41,26 @@ export class DrawService {
   private tools = [brandThemeTool, weatherTool, githubTool]; // 挂载所有工具：品牌色查询、天气查询、GitHub信息查询
   private aliyun: any;
   private readonly logger = new Logger(DrawService.name);
-  // 👇 2. 实例化一个内存存储器（你可以把它想象成 AI 的海马体）
-  private checkpointer = new MemorySaver();
+  // 👇 2. 声明 Redis 持久化存储器（数据存在 Redis 中，服务重启不丢失）
+  private checkpointer: RedisSaver;
 
   constructor(private configService: ConfigService) {
-    this.initGraph();
     this.initAliyun();
+    // 注意：RedisSaver 初始化是异步的，不能在 constructor 里直接 await
+    this.init();
+  }
+
+  // 👇 新增：异步初始化 Redis Checkpointer
+  private async init() {
+    const redisUrl = this.configService.get<string>('REDIS_URL') || 'redis://localhost:6379';
+    this.checkpointer = await RedisSaver.fromUrl(redisUrl, {
+      defaultTTL: 1440,     // 会话数据 24 小时后自动过期（单位：分钟）
+      refreshOnRead: true,  // 每次读取时自动续期，活跃会话永不过期
+    });
+    this.logger.log('✅ Redis Checkpointer 初始化成功');
+
+    // Graph 的编译依赖 checkpointer，所以必须在 checkpointer 就绪后执行
+    this.initGraph();
   }
 
   private initAliyun() {

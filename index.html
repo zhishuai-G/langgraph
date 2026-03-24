@@ -1,23 +1,59 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="UTF-8">
   <title>AI Agent 驱动的 Konva 画布</title>
   <script src="https://unpkg.com/konva@9.3.6/konva.min.js"></script>
   <style>
-    body { font-family: sans-serif; padding: 20px; background: #f0f2f5; }
-    .control-panel { margin-bottom: 20px; display: flex; gap: 10px; }
-    input { flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; }
-    button { padding: 10px 20px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-    button:disabled { background: #ccc; }
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+      background: #f0f2f5;
+    }
+
+    .control-panel {
+      margin-bottom: 20px;
+      display: flex;
+      gap: 10px;
+    }
+
+    input {
+      flex: 1;
+      padding: 10px;
+      font-size: 16px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      background: #ccc;
+    }
+
     /* 给画布加个漂亮的白底和阴影 */
-    #container { background: white; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }
+    #container {
+      background: white;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      border-radius: 8px;
+      overflow: hidden;
+    }
   </style>
 </head>
+
 <body>
 
   <h2>✨ 对话即画图 (AI Agent + Konva.js)</h2>
-  
+
   <div class="control-panel">
     <input type="text" id="userInput" placeholder="例如：帮我画一个蓝色的长方形，稍微宽一点" />
     <button id="sendBtn">发送给 AI</button>
@@ -38,6 +74,9 @@
     const input = document.getElementById('userInput');
     const btn = document.getElementById('sendBtn');
 
+    // 🔑 生成一个唯一的会话 ID（同一个页面会话内保持不变，刷新页面即为新会话）
+    const sessionId = 'session-' + Date.now();
+
     // 2. 点击发送按钮的逻辑
     btn.addEventListener('click', async () => {
       const text = input.value.trim();
@@ -47,86 +86,50 @@
       btn.disabled = true;
 
       try {
-      // 1. 发起流式请求到正确的接口
-      const response = await fetch('http://localhost:3000/api/stream-draw', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text })
-      });
+        // 🚀 调用带记忆的 draw 接口
+        const response = await fetch('http://localhost:3000/api/draw', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: text, sessionId: sessionId })
+        });
 
-      // 2. 获取数据流阅读器
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
+        const data = await response.json();
 
-      // 3. 开启死循环，不断读取数据流
-      while (true) {
-        const { done, value } = await reader.read();
-        console.log('done', done);
-        if (done) break; // 数据流结束，跳出循环
+        if (data.success && data.shapes && data.shapes.length > 0) {
+          console.log('🎨 收到图形配置：', data.shapes);
 
-        // 将二进制数据解码成字符串片段
-        const chunk = decoder.decode(value, { stream: true });
-        
-        // 按照 SSE 规范，用双换行符切割数据块
-        const lines = chunk.split('\n\n');
+          // 清空旧图形
+          layer.destroyChildren();
 
-        console.log(lines);
-        
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.slice(6); // 截取 "data: " 后面的内容
-            
-            if (dataStr === '[DONE]') {
-              console.log('🎉 渲染完成！');
-              continue;
+          // 动态渲染图形
+          data.shapes.forEach(shape => {
+            let konvaNode;
+
+            if (shape.type === 'rect') {
+              konvaNode = new Konva.Rect({
+                x: 300, y: 200,
+                width: shape.width || 100,
+                height: shape.height || 100,
+                fill: shape.fill || '#ccc',
+              });
+            } else if (shape.type === 'circle') {
+              konvaNode = new Konva.Circle({
+                x: 400, y: 250,
+                radius: (shape.width || 100) / 2,
+                fill: shape.fill || '#ccc',
+              });
             }
 
-            try {
-              // 4. 解析大模型传来的“半成品” JSON
-              const partialData = JSON.parse(dataStr);
-              
-              if (partialData.shapes && partialData.shapes.length > 0) {
-                console.log('🎨 收到新图形：', partialData.shapes);
-                // 清空旧图形
-                layer.destroyChildren();
-
-                // 5. 动态渲染：防范属性缺失
-                partialData.shapes.forEach(shape => {
-                  let konvaNode;
-                  
-                  // 注意：因为是流式输出，width/height/fill 可能还没生成出来！
-                  // 我们需要给它们一个默认值，这样就能看到图形“从小变大”的动画效果
-                  const currentWidth = shape.width || 10; 
-                  const currentFill = shape.fill || '#e0e0e0'; // 没出颜色前显示灰色
-
-                  if (shape.type === 'rect') {
-                    konvaNode = new Konva.Rect({
-                      x: 300, y: 200,
-                      width: currentWidth,
-                      height: shape.height || 10,
-                      fill: currentFill,
-                    });
-                  } else if (shape.type === 'circle') {
-                    konvaNode = new Konva.Circle({
-                      x: 400, y: 250,
-                      radius: currentWidth / 2,
-                      fill: currentFill,
-                    });
-                  }
-
-                  if (konvaNode) layer.add(konvaNode);
-                });
-                
-                layer.draw(); // 强制 Konva 重绘
-              }
-            } catch (e) {
-              // 忽略解析错误（由于数据截断可能会偶尔报错，流式渲染中属正常现象）
+            if (konvaNode) {
+              layer.add(konvaNode);
             }
-          }
+          });
+
+          layer.draw(); // 强制 Konva 重绘
+        } else if (data.error) {
+          alert('AI 出错了：' + data.error);
         }
-      }
-    } catch (err) {
+      } catch (err) {
         alert("网络请求失败");
       } finally {
         btn.innerText = "发送给 AI";
@@ -135,4 +138,5 @@
     });
   </script>
 </body>
+
 </html>
