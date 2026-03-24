@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { ConfigService } from '@nestjs/config';
 import { createOpenAI } from '@ai-sdk/openai';
 import { streamObject } from 'ai';
+import { MemorySaver } from '@langchain/langgraph'; // 👈 1. 引入记忆存储器
 
 // ==========================================
 // 1. 定义全局状态 (State)
@@ -40,6 +41,8 @@ export class DrawService {
   private tools = [brandThemeTool, weatherTool, githubTool]; // 挂载所有工具：品牌色查询、天气查询、GitHub信息查询
   private aliyun: any;
   private readonly logger = new Logger(DrawService.name);
+  // 👇 2. 实例化一个内存存储器（你可以把它想象成 AI 的海马体）
+  private checkpointer = new MemorySaver();
 
   constructor(private configService: ConfigService) {
     this.initGraph();
@@ -123,26 +126,33 @@ export class DrawService {
     const extractorNode = async (state: typeof GraphState.State) => {
       console.log('📊 提取最终结果...');
       const structuredModel = model.withStructuredOutput(SHAPE_SCHEMA);
-      
+
+      // 构建"上一轮已有图形"的上下文，让大模型知道画布当前状态
+      const previousShapesContext = (state.shapes && state.shapes.length > 0)
+        ? `\n当前画布上已有的图形（上一次生成的结果）：\n${JSON.stringify(state.shapes, null, 2)}\n注意：如果用户的请求是在已有图形的基础上做修改（如改颜色、改大小），请保留未提及属性不变，只修改用户明确要求改动的部分。`
+        : '';
+
       const prompt = `你是图形生成助手。请根据以下信息生成图形配置：
 用户原始请求：${state.userInput}
+${previousShapesContext}
 对话过程中获取的信息：
 ${state.messages.map((m: any) => m.content).filter(Boolean).join('\n')}
 
 要求：
 1. 严格按照用户请求生成图形，不要添加额外的图形
 2. 如果用户说"画一个圆"，就只生成一个圆形
-3. 颜色优先级：品牌色 > 天气推荐颜色 > 用户指定颜色
-4. 根据天气选择合适的颜色：
+3. 如果用户的请求是修改类指令（如"把颜色改成…"、"把形状变大"等），必须基于"当前画布上已有的图形"进行修改，只改用户提到的属性，其余属性保持不变
+4. 颜色优先级：品牌色 > 天气推荐颜色 > 用户指定颜色
+5. 根据天气选择合适的颜色：
    - 晴天：暖色调（#FF6B6B 红色、#FFA500 橙色、#FFD700 黄色）
    - 多云/阴天：中性色（#A9A9A9 灰色、#87CEEB 浅蓝色）
    - 雨/雪：冷色调（#1E90FF 蓝色、#9370DB 紫色）
    - 根据温度调整：高温用冷色，低温用暖色，舒适温度根据天气选择
-5. 图形形状选择：
+6. 图形形状选择：
    - 晴天：圆形（表示太阳）
    - 多云：矩形或方形
    - 雨/雪：圆形（表示雨滴）
-6. 圆形的 width 和 height 应该相同`;
+7. 圆形的 width 和 height 应该相同`;
 
       const result = await structuredModel.invoke(prompt);
       console.log('✨ 最终图形配置:', JSON.stringify(result.shapes, null, 2));
@@ -168,10 +178,11 @@ ${state.messages.map((m: any) => m.content).filter(Boolean).join('\n')}
       })
 
       // 🔄 工具跑完一定要回到 agent，让 AI 确认一眼查到的数据
-      .addEdge('tools', 'agent') 
+      .addEdge('tools', 'agent')
       .addEdge('extractor', END);
 
-    this.agentApp = workflow.compile();
+    // 💡 3. 核心魔法：编译时开启记忆机制！
+    this.agentApp = workflow.compile({ checkpointer: this.checkpointer });
   }
 
   // 新增：专门用于流式输出的接口
@@ -208,14 +219,25 @@ ${state.messages.map((m: any) => m.content).filter(Boolean).join('\n')}
   }
 
   // 供 Controller 调用的入口
-  async draw(text: string) {
-    const finalState = await this.agentApp.invoke({
-      userInput: text,
-      shapes: [],
-      errorLog: null,
-      retryCount: 0,
-    });
+  async draw(text: string, sessionId: string = 'default-session') {
+    try {
+      const finalState = await this.agentApp.invoke(
+        {
+          userInput: text,
+          // 🚨 直接在这里把用户当前的话作为 HumanMessage 存入记忆数组！
+          // 这样底层的 state.messages 就会永远保持最新，且包含历史记录
+          messages: [new HumanMessage(text)]
+        },
+        {
+          // 🚨 通过 configurable 传入 thread_id，让 AI 知道现在是在跟谁聊天
+          configurable: { thread_id: sessionId }
+        }
+      );
 
-    return { success: true, shapes: finalState.shapes };
+      return { success: true, shapes: finalState.shapes };
+    } catch (error) {
+      this.logger.error(`Agent 运行失败: ${error.message}`);
+      return { success: false, error: error.message };
+    }
   }
 }

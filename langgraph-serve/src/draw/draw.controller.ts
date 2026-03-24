@@ -10,20 +10,16 @@ export class DrawController {
 
   @Post('draw')
   @HttpCode(200)
-  @ApiOperation({ summary: '生成图形', description: '根据用户指令调用 AI 生成图形配置' })
-  @ApiBody({
-    type: DrawDto,
-    description: '用户绘图指令',
-  })
-  @ApiResponse({ status: 200, description: '生成成功', type: DrawResponseDto })
-  @ApiResponse({ status: 400, description: '请输入指令' })
+  @ApiOperation({ summary: '生成图形（带记忆）' })
+  @ApiBody({ type: DrawDto })
   async draw(@Body() body: DrawDto): Promise<DrawResponseDto> {
     if (!body.text) {
       throw new BadRequestException('请输入指令');
     }
 
     try {
-      return await this.drawService.draw(body.text);
+      // 将 sessionId 传给 Service。如果没有传，Service 会使用默认的 'default-session-id'
+      return await this.drawService.draw(body.text, body.sessionId);
     } catch (error) {
       return { success: false, error: error.message };
     }

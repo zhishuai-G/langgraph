@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiHideProperty } from '@nestjs/swagger';
 
 export class DrawDto {
   @ApiProperty({
@@ -15,6 +15,9 @@ export class DrawDto {
     },
   })
   text: string;
+
+  @ApiHideProperty()
+  sessionId?: string;
 }
 
 export class ShapeDto {

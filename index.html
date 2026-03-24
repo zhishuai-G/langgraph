@@ -29,8 +29,8 @@
     // 1. 初始化 Konva 舞台和图层
     const stage = new Konva.Stage({
       container: 'container',
-      width: 800,
-      height: 500,
+      width: window.innerWidth - 40,
+      height: 800,
     });
     const layer = new Konva.Layer();
     stage.add(layer);
@@ -47,54 +47,87 @@
       btn.disabled = true;
 
       try {
-        // 请求我们刚写的 Node.js 后端接口
-        const response = await fetch('http://localhost:3000/api/draw', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: text })
-        });
-        
-        const data = await response.json();
-        
-        if (data.success && data.shapes.length > 0) {
-          // 清空旧图形
-          layer.destroyChildren();
+      // 1. 发起流式请求到正确的接口
+      const response = await fetch('http://localhost:3000/api/stream-draw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text })
+      });
 
-          // 遍历 AI 返回的数据，画到屏幕上！
-          data.shapes.forEach(shapeData => {
-            let konvaNode;
+      // 2. 获取数据流阅读器
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+
+      // 3. 开启死循环，不断读取数据流
+      while (true) {
+        const { done, value } = await reader.read();
+        console.log('done', done);
+        if (done) break; // 数据流结束，跳出循环
+
+        // 将二进制数据解码成字符串片段
+        const chunk = decoder.decode(value, { stream: true });
+        
+        // 按照 SSE 规范，用双换行符切割数据块
+        const lines = chunk.split('\n\n');
+
+        console.log(lines);
+        
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6); // 截取 "data: " 后面的内容
             
-            // 将 AI 生成的通用 JSON 转换成 Konva 节点
-            if (shapeData.type === 'rect') {
-              konvaNode = new Konva.Rect({
-                x: 300, // 暂时固定画在中间
-                y: 200,
-                width: shapeData.width,
-                height: shapeData.height,
-                fill: shapeData.fill,
-                draggable: true // 顺手加个可拖拽功能
-              });
-            } else if (shapeData.type === 'circle') {
-              konvaNode = new Konva.Circle({
-                x: 400,
-                y: 250,
-                radius: shapeData.width / 2,
-                fill: shapeData.fill,
-                draggable: true
-              });
+            if (dataStr === '[DONE]') {
+              console.log('🎉 渲染完成！');
+              continue;
             }
 
-            if (konvaNode) {
-              layer.add(konvaNode);
+            try {
+              // 4. 解析大模型传来的“半成品” JSON
+              const partialData = JSON.parse(dataStr);
+              
+              if (partialData.shapes && partialData.shapes.length > 0) {
+                console.log('🎨 收到新图形：', partialData.shapes);
+                // 清空旧图形
+                layer.destroyChildren();
+
+                // 5. 动态渲染：防范属性缺失
+                partialData.shapes.forEach(shape => {
+                  let konvaNode;
+                  
+                  // 注意：因为是流式输出，width/height/fill 可能还没生成出来！
+                  // 我们需要给它们一个默认值，这样就能看到图形“从小变大”的动画效果
+                  const currentWidth = shape.width || 10; 
+                  const currentFill = shape.fill || '#e0e0e0'; // 没出颜色前显示灰色
+
+                  if (shape.type === 'rect') {
+                    konvaNode = new Konva.Rect({
+                      x: 300, y: 200,
+                      width: currentWidth,
+                      height: shape.height || 10,
+                      fill: currentFill,
+                    });
+                  } else if (shape.type === 'circle') {
+                    konvaNode = new Konva.Circle({
+                      x: 400, y: 250,
+                      radius: currentWidth / 2,
+                      fill: currentFill,
+                    });
+                  }
+
+                  if (konvaNode) layer.add(konvaNode);
+                });
+                
+                layer.draw(); // 强制 Konva 重绘
+              }
+            } catch (e) {
+              // 忽略解析错误（由于数据截断可能会偶尔报错，流式渲染中属正常现象）
             }
-          });
-          
-          layer.draw();
-        } else {
-          alert("AI 生成失败，请看控制台日志");
+          }
         }
-      } catch (err) {
-        alert("网络请求失败，后端服务启动了吗？");
+      }
+    } catch (err) {
+        alert("网络请求失败");
       } finally {
         btn.innerText = "发送给 AI";
         btn.disabled = false;
