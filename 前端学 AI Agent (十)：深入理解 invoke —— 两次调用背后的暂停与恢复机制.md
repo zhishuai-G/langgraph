@@ -288,7 +288,44 @@ this.agentApp = workflow.compile({ checkpointer: this.checkpointer });
 
 之后所有的存档/读档操作，LangGraph 在每个节点执行前后**自动完成**。
 
-## 六、 小结
+## 六、 易错点：恢复不是"断点续跑"
+
+很多人（包括我一开始）以为恢复执行时，代码会从 `interrupt()` 那一行继续往下跑。**这是错的。**
+
+恢复时，被暂停的节点会**从第一行重新执行**，只是这次 `interrupt()` 不抛异常了，而是直接返回 resume 的值。
+
+```typescript
+const reviewNode = async (state) => {
+  console.log('第1行：准备审核');          // ✅ 第一次执行  ✅ 第二次也执行
+  console.log('第2行：当前图形', state);   // ✅ 第一次执行  ✅ 第二次也执行
+  doSomething();                           // ✅ 第一次执行  ✅ 第二次也执行
+
+  const decision = interrupt({ ... });     // 💥 第一次抛异常  ✅ 第二次返回值
+
+  console.log('第5行：收到决策');           // ❌ 第一次跳过  ✅ 第二次执行
+  return { ... };                          // ❌ 第一次跳过  ✅ 第二次执行
+};
+```
+
+### 这意味着什么？——幂等性
+
+`interrupt()` 之前的代码会被执行**两遍**，所以这些代码必须是**幂等的**（执行多次效果一样）。
+
+```typescript
+// ✅ 幂等的代码（放在 interrupt 之前没问题）
+console.log('日志');                    // 打两次无所谓
+const x = state.shapes.length;         // 读操作，多读几次没影响
+const config = getConfig();            // 获取配置，多取几次没影响
+
+// ❌ 不幂等的代码（千万别放在 interrupt 之前！）
+await db.insert({ action: '审核' });   // 💀 第二次又插了一条记录！
+balance -= 100;                        // 💀 第二次又扣了一次钱！
+await sendEmail('开始审核');            // 💀 第二次又发了一封邮件！
+```
+
+**规则很简单**：`interrupt()` 前面只放"读操作"和"日志"，不要放"写操作"。如果实在需要写操作，要加幂等保护（比如先查是否已存在再插入）。
+
+## 七、 小结
 
 | 概念 | 本质 |
 |------|------|
