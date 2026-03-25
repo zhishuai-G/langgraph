@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <title>多 Agent 协作画图</title>
+  <script src="https://unpkg.com/konva@9.3.6/konva.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      padding: 20px;
+      background: #f0f2f5;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h2 { color: #1a1a1a; }
+
+    .control-panel {
+      margin-bottom: 20px;
+      display: flex;
+      gap: 10px;
+    }
+    input {
+      flex: 1;
+      padding: 10px;
+      font-size: 16px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+
+    #container {
+      background: white;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    /* 状态提示 */
+    .status-bar {
+      margin-bottom: 12px;
+      padding: 8px 16px;
+      border-radius: 4px;
+      display: none;
+      font-size: 14px;
+    }
+    .status-bar.info { display: block; background: #e6f7ff; border: 1px solid #91d5ff; color: #096dd9; }
+    .status-bar.success { display: block; background: #f6ffed; border: 1px solid #b7eb8f; color: #389e0d; }
+    .status-bar.error { display: block; background: #fff2f0; border: 1px solid #ffccc7; color: #cf1322; }
+
+    /* 审核面板 */
+    .review-panel {
+      display: none;
+      margin-bottom: 20px;
+      padding: 16px;
+      background: #fffbe6;
+      border: 2px solid #faad14;
+      border-radius: 8px;
+    }
+    .review-panel h3 { margin: 0 0 12px 0; color: #d48806; }
+
+    .review-buttons { margin-top: 12px; display: flex; gap: 10px; }
+    .btn-approve { background: #52c41a; color: white; border: none; padding: 10px 24px; font-size: 16px; border-radius: 4px; cursor: pointer; }
+    .btn-reject { background: #ff4d4f; color: white; border: none; padding: 10px 24px; font-size: 16px; border-radius: 4px; cursor: pointer; }
+    .btn-approve:hover { background: #389e0d; }
+    .btn-reject:hover { background: #cf1322; }
+
+    /* ========== 多 Agent 流水线可视化 ========== */
+    .pipeline-view {
+      margin-bottom: 20px;
+      padding: 16px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .pipeline-view h3 { margin: 0 0 16px 0; color: #333; }
+
+    .pipeline-steps {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .pipeline-step {
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 500;
+      border: 2px solid #d9d9d9;
+      color: #999;
+      background: #fafafa;
+      transition: all 0.3s;
+    }
+    .pipeline-step.active {
+      border-color: #1890ff;
+      color: #1890ff;
+      background: #e6f7ff;
+      animation: pulse 1.5s infinite;
+    }
+    .pipeline-step.done {
+      border-color: #52c41a;
+      color: #52c41a;
+      background: #f6ffed;
+    }
+    .pipeline-arrow {
+      color: #d9d9d9;
+      font-size: 18px;
+    }
+    .pipeline-arrow.done { color: #52c41a; }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(24,144,255,0.3); }
+      50% { box-shadow: 0 0 0 6px rgba(24,144,255,0); }
+    }
+
+    /* Agent 产出详情 */
+    .agent-outputs {
+      margin-top: 16px;
+      display: none;
+    }
+    .agent-output-item {
+      margin-bottom: 12px;
+      padding: 12px;
+      background: #f5f5f5;
+      border-radius: 6px;
+      border-left: 3px solid #1890ff;
+    }
+    .agent-output-item h4 {
+      margin: 0 0 6px 0;
+      font-size: 13px;
+      color: #666;
+    }
+    .agent-output-item pre {
+      margin: 0;
+      font-size: 12px;
+      white-space: pre-wrap;
+      color: #333;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>多 Agent 协作画图 (Supervisor + Designer + Colorist + Layouter)</h2>
+
+  <div class="control-panel">
+    <input type="text" id="userInput" placeholder="例如：用 #FF6B6B 色系画三个圆，或者：画几个和谐配色的方块" />
+    <button id="sendBtn">发送给 AI 团队</button>
+  </div>
+
+  <div id="statusBar" class="status-bar"></div>
+
+  <!-- 多 Agent 流水线可视化 -->
+  <div class="pipeline-view">
+    <h3>Agent 协作流水线</h3>
+    <div class="pipeline-steps">
+      <span class="pipeline-step" id="step-supervisor">Supervisor (主管)</span>
+      <span class="pipeline-arrow" id="arrow-1">→</span>
+      <span class="pipeline-step" id="step-designer">Designer (设计师)</span>
+      <span class="pipeline-arrow" id="arrow-2">→</span>
+      <span class="pipeline-step" id="step-colorist">Colorist (配色 API)</span>
+      <span class="pipeline-arrow" id="arrow-3">→</span>
+      <span class="pipeline-step" id="step-layouter">Layouter (布局师)</span>
+      <span class="pipeline-arrow" id="arrow-4">→</span>
+      <span class="pipeline-step" id="step-review">Review (审核)</span>
+    </div>
+
+    <!-- Agent 产出详情 -->
+    <div class="agent-outputs" id="agentOutputs">
+      <div class="agent-output-item" id="output-plan" style="display:none">
+        <h4>Supervisor 设计方案</h4>
+        <pre id="planContent"></pre>
+      </div>
+      <div class="agent-output-item" id="output-drafts" style="display:none">
+        <h4>Designer 图形骨架（无颜色、无位置）</h4>
+        <pre id="draftsContent"></pre>
+      </div>
+      <div class="agent-output-item" id="output-colored" style="display:none">
+        <h4>Colorist 配色结果</h4>
+        <pre id="coloredContent"></pre>
+      </div>
+      <div class="agent-output-item" id="output-final" style="display:none">
+        <h4>Layouter 最终布局</h4>
+        <pre id="finalContent"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- 审核面板 -->
+  <div id="reviewPanel" class="review-panel">
+    <h3>多 Agent 团队已完成协作，请确认是否渲染：</h3>
+    <pre id="reviewContent" style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:13px;max-height:200px;overflow:auto"></pre>
+    <div class="review-buttons">
+      <button class="btn-approve" id="approveBtn">确认渲染</button>
+      <button class="btn-reject" id="rejectBtn">拒绝重来</button>
+    </div>
+  </div>
+
+  <div id="container"></div>
+
+  <script>
+    // 初始化画布
+    const stage = new Konva.Stage({
+      container: 'container',
+      width: window.innerWidth - 40 > 1160 ? 1160 : window.innerWidth - 40,
+      height: 600,
+    });
+    const layer = new Konva.Layer();
+    stage.add(layer);
+
+    const input = document.getElementById('userInput');
+    const btn = document.getElementById('sendBtn');
+    const statusBar = document.getElementById('statusBar');
+    const reviewPanel = document.getElementById('reviewPanel');
+    const reviewContent = document.getElementById('reviewContent');
+    const approveBtn = document.getElementById('approveBtn');
+    const rejectBtn = document.getElementById('rejectBtn');
+
+    const sessionId = 'multi-' + Date.now();
+
+    function setStatus(type, text) {
+      statusBar.className = 'status-bar ' + type;
+      statusBar.textContent = text;
+    }
+
+    // 渲染图形（多 Agent 版支持 x, y 坐标）
+    function renderShapes(shapes) {
+      layer.destroyChildren();
+      shapes.forEach(shape => {
+        let node;
+        if (shape.type === 'rect') {
+          node = new Konva.Rect({
+            x: shape.x || 300,
+            y: shape.y || 200,
+            width: shape.width || 100,
+            height: shape.height || 100,
+            fill: shape.fill || '#ccc',
+            cornerRadius: 4,
+            shadowColor: 'rgba(0,0,0,0.15)',
+            shadowBlur: 8,
+            shadowOffset: { x: 2, y: 2 },
+          });
+        } else if (shape.type === 'circle') {
+          node = new Konva.Circle({
+            x: shape.x || 400,
+            y: shape.y || 250,
+            radius: (shape.width || 100) / 2,
+            fill: shape.fill || '#ccc',
+            shadowColor: 'rgba(0,0,0,0.15)',
+            shadowBlur: 8,
+            shadowOffset: { x: 2, y: 2 },
+          });
+        }
+        if (node) layer.add(node);
+      });
+      layer.draw();
+    }
+
+    // 流水线可视化：高亮当前步骤
+    const steps = ['supervisor', 'designer', 'colorist', 'layouter', 'review'];
+    function highlightStep(stepIndex) {
+      steps.forEach((s, i) => {
+        const el = document.getElementById('step-' + s);
+        const arrow = document.getElementById('arrow-' + (i + 1));
+        if (i < stepIndex) {
+          el.className = 'pipeline-step done';
+          if (arrow) arrow.className = 'pipeline-arrow done';
+        } else if (i === stepIndex) {
+          el.className = 'pipeline-step active';
+        } else {
+          el.className = 'pipeline-step';
+          if (arrow) arrow.className = 'pipeline-arrow';
+        }
+      });
+    }
+
+    function resetPipeline() {
+      steps.forEach((s, i) => {
+        document.getElementById('step-' + s).className = 'pipeline-step';
+        const arrow = document.getElementById('arrow-' + (i + 1));
+        if (arrow) arrow.className = 'pipeline-arrow';
+      });
+      document.getElementById('agentOutputs').style.display = 'none';
+      ['output-plan','output-drafts','output-colored','output-final'].forEach(id => {
+        document.getElementById(id).style.display = 'none';
+      });
+    }
+
+    // 展示每个 Agent 的产出
+    function showPipelineOutputs(pipeline) {
+      const outputs = document.getElementById('agentOutputs');
+      outputs.style.display = 'block';
+
+      if (pipeline.designPlan) {
+        document.getElementById('output-plan').style.display = 'block';
+        document.getElementById('planContent').textContent = pipeline.designPlan;
+      }
+      if (pipeline.shapeDrafts) {
+        document.getElementById('output-drafts').style.display = 'block';
+        document.getElementById('draftsContent').textContent = JSON.stringify(pipeline.shapeDrafts, null, 2);
+      }
+      if (pipeline.coloredShapes) {
+        document.getElementById('output-colored').style.display = 'block';
+        document.getElementById('coloredContent').textContent = JSON.stringify(pipeline.coloredShapes, null, 2);
+      }
+      if (pipeline.finalShapes) {
+        document.getElementById('output-final').style.display = 'block';
+        document.getElementById('finalContent').textContent = JSON.stringify(pipeline.finalShapes, null, 2);
+      }
+    }
+
+    // 发送按钮
+    btn.addEventListener('click', async () => {
+      const text = input.value.trim();
+      if (!text) return;
+
+      btn.innerText = 'Agent 团队协作中...';
+      btn.disabled = true;
+      reviewPanel.style.display = 'none';
+      resetPipeline();
+
+      // 模拟流水线动画（因为后端是一次性返回，这里用定时器模拟进度）
+      setStatus('info', 'Supervisor 正在分析需求...');
+      highlightStep(0);
+
+      const progressTimer = setInterval(() => {
+        const current = steps.findIndex(s =>
+          document.getElementById('step-' + s).classList.contains('active')
+        );
+        if (current < 4) {
+      const agentNames = ['Designer 设计图形中...', 'Colorist 调用配色 API 中...', 'Layouter 布局中...', '等待审核...'];
+          highlightStep(current + 1);
+          setStatus('info', agentNames[current]);
+        } else {
+          clearInterval(progressTimer);
+        }
+      }, 2000);
+
+      try {
+        const response = await fetch('http://localhost:3000/api/multi-draw', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, sessionId }),
+        });
+        clearInterval(progressTimer);
+
+        const data = await response.json();
+
+        if (data.success && data.status === 'pending_review') {
+          // 所有 Agent 完成，等待审核
+          highlightStep(4); // review 步骤高亮
+          setStatus('info', '多 Agent 协作完成！请确认是否渲染');
+
+          // 展示协作过程
+          if (data.pipeline) {
+            showPipelineOutputs(data.pipeline);
+          }
+
+          reviewContent.textContent = JSON.stringify(data.shapes, null, 2);
+          reviewPanel.style.display = 'block';
+
+          renderShapes(data.shapes);
+          layer.opacity(0.5);
+          layer.draw();
+
+        } else if (data.success && data.shapes) {
+          steps.forEach((_, i) => highlightStep(i));
+          renderShapes(data.shapes);
+          setStatus('success', 'Agent 团队协作完成！');
+        } else if (data.error) {
+          setStatus('error', '出错了：' + data.error);
+        }
+      } catch (err) {
+        clearInterval(progressTimer);
+        setStatus('error', '网络请求失败: ' + err.message);
+      } finally {
+        btn.innerText = '发送给 AI 团队';
+        btn.disabled = false;
+      }
+    });
+
+    // 确认渲染
+    approveBtn.addEventListener('click', async () => {
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      setStatus('info', '确认渲染中...');
+
+      try {
+        const response = await fetch('http://localhost:3000/api/multi-draw-resume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId, decision: 'approve' }),
+        });
+        const data = await response.json();
+
+        if (data.success && data.status === 'approved') {
+          renderShapes(data.shapes);
+          layer.opacity(1);
+          layer.draw();
+          reviewPanel.style.display = 'none';
+          // 所有步骤标记为完成
+          steps.forEach((_, i) => highlightStep(5));
+          setStatus('success', '图形已确认并渲染！');
+        }
+      } catch (err) {
+        setStatus('error', '确认请求失败');
+      } finally {
+        approveBtn.disabled = false;
+        rejectBtn.disabled = false;
+      }
+    });
+
+    // 拒绝
+    rejectBtn.addEventListener('click', async () => {
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      setStatus('info', '处理拒绝...');
+
+      try {
+        const response = await fetch('http://localhost:3000/api/multi-draw-resume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId, decision: 'reject' }),
+        });
+        const data = await response.json();
+
+        if (data.success && data.status === 'rejected') {
+          layer.destroyChildren();
+          layer.opacity(1);
+          layer.draw();
+          reviewPanel.style.display = 'none';
+          resetPipeline();
+          setStatus('info', '已拒绝，请重新输入指令');
+        }
+      } catch (err) {
+        setStatus('error', '拒绝请求失败');
+      } finally {
+        approveBtn.disabled = false;
+        rejectBtn.disabled = false;
+      }
+    });
+
+    // 回车发送
+    input.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && !btn.disabled) btn.click();
+    });
+  </script>
+</body>
+
+</html>
