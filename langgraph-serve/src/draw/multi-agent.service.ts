@@ -197,7 +197,7 @@ export class MultiAgentService {
       ]);
 
       if ((response.tool_calls?.length ?? 0) > 0) {
-        this.logger.log(`🔧 [Colorist] 调用 ${response.tool_calls.length} 个工具`);
+        this.logger.log(`🔧 [Colorist] 调用 ${response.tool_calls?.length} 个工具`);
         return { messages: [response], currentAgent: 'colorist' };
       }
 
